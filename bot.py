@@ -8,15 +8,21 @@ from aiogram import (
     types
 )
 from aiogram.filters import CommandStart, Command
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from dotenv import load_dotenv
+
+from fsp import PostForm
+from texts import PRICE
 
 load_dotenv()
 
-TOKEN = '7852251789:AAEnXwI73mCpWCDAgNFF9f_HKVPlLMHv5xc'
 
-# bot = Bot(os.getenv('TOKEN'))
+TOKEN = os.getenv('TOKEN')
+ADMIN_ID = int(os.getenv('ADMIN_ID'))
+CHANNEL_ID = int(os.getenv('CHANNEL_ID'))
 bot = Bot(TOKEN)
 dp = Dispatcher()
+
 
 @dp.message(CommandStart())
 async def hendler_start(message: types.Message):
