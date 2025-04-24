@@ -19,4 +19,4 @@ RUN pip install --no-cache-dir -r req.txt
 COPY . .
 
 # Старт бота
-CMD ["python", "main.py"]
+CMD ["python", "botmessage copy.py"]
