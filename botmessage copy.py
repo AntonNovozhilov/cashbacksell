@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+from collections import defaultdict
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.enums import ParseMode
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto
@@ -12,14 +13,17 @@ from aiogram.fsm.state import State, StatesGroup
 from dotenv import load_dotenv
 load_dotenv()  
 
-from texts import FAQ, REQUISE  # Убедись, что эти файлы существуют
+from texts import FAQ, REQUISE
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 GROUP_ID = -1002562650840
 ADMIN_ID = [6446030996, 448888074, 1111339115]
-CHANNEL_ID = -1002083919862  # сюда вставь chat_id канала
+CHANNEL_ID = -1002083919862
 PRICE_MESSAGE_ID = 7
 THREADS_FILE = "threads.json"
+
+media_group_buffer = defaultdict(list)
+
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
@@ -34,7 +38,9 @@ class PostState(StatesGroup):
     title = State()
     place = State()
     price = State()
+    price_post = State()
     cashback = State()
+    seller = State()
     photo = State()
 
 def load_threads() -> dict[int, int]:
@@ -100,15 +106,32 @@ async def post_price(message: Message, state: FSMContext):
         await message.answer("Пожалуйста, введите цену числом без пробелов и символов (например, 1490):")
         return
     await state.update_data(price=message.text)
-    await message.answer("Введите сумму кешбэка в рублях:")
+    await message.answer("Введите стоимость товара с учетом кешбека:")
+    await state.set_state(PostState.price_post)
+
+@router.message(PostState.price_post)
+async def post_price_post(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Пожалуйста, введите цену числом без пробелов и символов (например, 1490):")
+        return
+    await state.update_data(price_post=message.text)
+    await message.answer("Введите сумму кешбэка в рублях или процентах:")
     await state.set_state(PostState.cashback)
 
 @router.message(PostState.cashback)
 async def post_cashback(message: Message, state: FSMContext):
     if not message.text.isdigit():
-        await message.answer("Пожалуйста, введите кешбэк числом без пробелов и символов (например, 300):")
+        await message.answer("Пожалуйста, введите кешбэк числом (например, 300 или 10):")
         return
-    await state.update_data(cashback=message.text)
+    cashback_value = int(message.text)
+    cashback_type = "₽" if cashback_value > 100 else "%"
+    await state.update_data(cashback=cashback_value, cashback_type=cashback_type)
+    await message.answer("Укажите контакт для связи:")
+    await state.set_state(PostState.seller)
+
+@router.message(PostState.seller)
+async def post_seller(message: Message, state: FSMContext):
+    await state.update_data(seller=message.text)
     await message.answer("Теперь прикрепите фото к посту:")
     await state.set_state(PostState.photo)
 
@@ -120,11 +143,28 @@ async def wrong_input_in_photo(message: Message):
 
 @router.message(PostState.photo, F.photo)
 async def post_photo(message: Message, state: FSMContext):
-    data = await state.get_data()
-    photos = data.get("photos", [])
-    photos.append(message.photo[-1].file_id)
-    await state.update_data(photos=photos)
-    if len(photos) == 1:
+    if message.media_group_id:
+        media_group_buffer[message.media_group_id].append(message.photo[-1].file_id)
+
+        if len(media_group_buffer[message.media_group_id]) == 1:
+            await asyncio.sleep(1.5)
+            photo_ids = media_group_buffer.pop(message.media_group_id)
+            data = await state.get_data()
+            photos = data.get("photos", [])
+            photos.extend(photo_ids)
+            await state.update_data(photos=photos)
+
+            await message.answer(
+                "🖼 Фото добавлены. Далее: отправьте ещё или нажмите кнопку ниже для завершения.",
+                reply_markup=finish_kb
+            )
+
+    else:
+        data = await state.get_data()
+        photos = data.get("photos", [])
+        photos.append(message.photo[-1].file_id)
+        await state.update_data(photos=photos)
+
         await message.answer(
             "🖼 Фото добавлены. Далее: отправьте ещё или нажмите кнопку ниже для завершения.",
             reply_markup=finish_kb
@@ -132,7 +172,7 @@ async def post_photo(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "finish_post")
 async def handle_finish(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()  # скрыть "загрузка..." у пользователя
+    await callback.answer()
     data = await state.get_data()
     photos = data.get("photos", [])
 
@@ -141,17 +181,16 @@ async def handle_finish(callback: CallbackQuery, state: FSMContext):
         return
 
     price = int(data["price"])
-    cashback = int(data["cashback"])
-    new_price = price - cashback
+    cashback = data["cashback"]
     username = callback.from_user.username or callback.from_user.first_name
 
     text = (
-        f"<b>{data['title']}</b> \n"
-        f"<b>{data['place']}</b> \n\n"
+        f"<i><b>{data['title']}</b></i> \n"
+        f"<i>{data['place']}</i> \n\n"
         f"<b>Цена на маркетплейсе:</b> {data['price']}₽ ❌ \n"
-        f"<b>Цена для вас:</b> {new_price}₽ ✅ \n"
-        f"<b>Кешбэк:</b> {data['cashback']}₽ 🔥 \n\n"
-        f"🖊️ <b>Для получения инструкции по выкупу пиши</b> @{username}"
+        f"<b>Цена для вас:</b> {data['price_post']}₽ ✅ \n"
+        f"<b>Размер кешбека:</b> {data['cashback']}{data['cashback_type']} 🔥 \n\n"
+        f"🖊️ <b>Для получения инструкции по выкупу пиши</b> <i>@{data['seller']}</i>"
     )
 
     user_id = callback.from_user.id
